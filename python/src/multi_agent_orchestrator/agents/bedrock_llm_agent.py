@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import re
 import json
 import os
-import boto3
+import aioboto3
 from multi_agent_orchestrator.agents import Agent, AgentOptions
 from multi_agent_orchestrator.types import (ConversationMessage,
                        ParticipantRole,
@@ -34,12 +34,12 @@ class BedrockLLMAgent(Agent):
             self.client = options.client
         else:
             if options.region:
-                self.client = boto3.client(
+                self.client = aioboto3.Session().client(
                     'bedrock-runtime',
                     region_name=options.region or os.environ.get('AWS_REGION')
                 )
             else:
-                self.client = boto3.client('bedrock-runtime')
+                self.client = aioboto3.Session().client('bedrock-runtime')
 
         self.model_id: str = options.model_id or BEDROCK_MODEL_ID_CLAUDE_3_HAIKU
         self.streaming: bool = options.streaming
@@ -178,7 +178,7 @@ class BedrockLLMAgent(Agent):
 
     async def handle_single_response(self, converse_input: dict[str, Any]) -> ConversationMessage:
         try:
-            response = self.client.converse(**converse_input)
+            response = await self.client.converse(**converse_input)
             if 'output' not in response:
                 raise ValueError("No output received from Bedrock model")
             return ConversationMessage(
@@ -191,7 +191,7 @@ class BedrockLLMAgent(Agent):
 
     async def handle_streaming_response(self, converse_input: dict[str, Any]) -> ConversationMessage:
         try:
-            response = self.client.converse_stream(**converse_input)
+            response = await self.client.converse_stream(**converse_input)
 
             message = {}
             content = []
