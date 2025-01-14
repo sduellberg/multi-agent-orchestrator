@@ -2,7 +2,6 @@ from typing import Any, AsyncIterable, Optional, Union
 from dataclasses import dataclass
 import re
 import json
-import os
 import aioboto3
 from multi_agent_orchestrator.agents import Agent, AgentOptions
 from multi_agent_orchestrator.types import (ConversationMessage,
@@ -32,17 +31,11 @@ class BedrockLLMAgent(Agent):
         super().__init__(options)
         if options.client:
             self.client = options.client
-        else:
-            if options.region:
-                self.client = aioboto3.Session().client(
-                    'bedrock-runtime',
-                    region_name=options.region or os.environ.get('AWS_REGION')
-                )
-            else:
-                self.client = aioboto3.Session().client('bedrock-runtime')
+        if options.region:
+            self.region = options.region
 
         self.model_id: str = options.model_id or BEDROCK_MODEL_ID_CLAUDE_3_HAIKU
-        self.streaming: bool = options.streaming
+        self.streaming: bool | None = options.streaming
         self.inference_config: dict[str, Any]
 
         default_inference_config = {
@@ -91,6 +84,18 @@ class BedrockLLMAgent(Agent):
                 options.custom_system_prompt.get('template'),
                 options.custom_system_prompt.get('variables')
             )
+        
+    async def get_client(self):
+        if not self.client:
+            if self.region:
+                self.client = await aioboto3.Session().client(
+                    'bedrock-runtime',
+                    region_name=self.region
+                )
+            else:
+                self.client = await aioboto3.Session().client('bedrock-runtime')
+        
+        return self.client
 
     def is_streaming_enabled(self) -> bool:
         return self.streaming is True
@@ -178,7 +183,8 @@ class BedrockLLMAgent(Agent):
 
     async def handle_single_response(self, converse_input: dict[str, Any]) -> ConversationMessage:
         try:
-            response = await self.client.converse(**converse_input)
+            client = await self.get_client()
+            response = await client.converse(**converse_input)
             if 'output' not in response:
                 raise ValueError("No output received from Bedrock model")
             return ConversationMessage(
@@ -191,7 +197,8 @@ class BedrockLLMAgent(Agent):
 
     async def handle_streaming_response(self, converse_input: dict[str, Any]) -> ConversationMessage:
         try:
-            response = await self.client.converse_stream(**converse_input)
+            client = await self.get_client()
+            response = await client.converse_stream(**converse_input)
 
             message = {}
             content = []
