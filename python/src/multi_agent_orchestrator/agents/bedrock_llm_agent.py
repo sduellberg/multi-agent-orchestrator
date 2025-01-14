@@ -29,10 +29,11 @@ class BedrockLLMAgentOptions(AgentOptions):
 class BedrockLLMAgent(Agent):
     def __init__(self, options: BedrockLLMAgentOptions):
         super().__init__(options)
-        if options.client:
-            self.client = options.client
         if options.region:
             self.region = options.region
+            self.session = aioboto3.Session(region_name=self.region)
+        else:
+            self.session = aioboto3.Session()
 
         self.model_id: str = options.model_id or BEDROCK_MODEL_ID_CLAUDE_3_HAIKU
         self.streaming: bool | None = options.streaming
@@ -85,18 +86,6 @@ class BedrockLLMAgent(Agent):
                 options.custom_system_prompt.get('variables')
             )
         
-    async def get_client(self):
-        if not self.client:
-            if self.region:
-                self.client = await aioboto3.Session().client(
-                    'bedrock-runtime',
-                    region_name=self.region
-                )
-            else:
-                self.client = await aioboto3.Session().client('bedrock-runtime')
-        
-        return self.client
-
     def is_streaming_enabled(self) -> bool:
         return self.streaming is True
 
@@ -183,58 +172,58 @@ class BedrockLLMAgent(Agent):
 
     async def handle_single_response(self, converse_input: dict[str, Any]) -> ConversationMessage:
         try:
-            client = await self.get_client()
-            response = await client.converse(**converse_input)
-            if 'output' not in response:
-                raise ValueError("No output received from Bedrock model")
-            return ConversationMessage(
-                role=response['output']['message']['role'],
-                content=response['output']['message']['content']
-            )
+            async with self.session.client('bedrock-runtime') as client:
+                response = await client.converse(**converse_input)
+                if 'output' not in response:
+                    raise ValueError("No output received from Bedrock model")
+                return ConversationMessage(
+                    role=response['output']['message']['role'],
+                    content=response['output']['message']['content']
+                )
         except Exception as error:
             Logger.error(f"Error invoking Bedrock model:{str(error)}")
             raise error
 
     async def handle_streaming_response(self, converse_input: dict[str, Any]) -> ConversationMessage:
         try:
-            client = await self.get_client()
-            response = await client.converse_stream(**converse_input)
+            async with self.session.client('bedrock-runtime') as client:
+                response = await client.converse_stream(**converse_input)
 
-            message = {}
-            content = []
-            message['content'] = content
-            text = ''
-            tool_use = {}
+                message = {}
+                content = []
+                message['content'] = content
+                text = ''
+                tool_use = {}
 
-            #stream the response into a message.
-            for chunk in response['stream']:
-                if 'messageStart' in chunk:
-                    message['role'] = chunk['messageStart']['role']
-                elif 'contentBlockStart' in chunk:
-                    tool = chunk['contentBlockStart']['start']['toolUse']
-                    tool_use['toolUseId'] = tool['toolUseId']
-                    tool_use['name'] = tool['name']
-                elif 'contentBlockDelta' in chunk:
-                    delta = chunk['contentBlockDelta']['delta']
-                    if 'toolUse' in delta:
-                        if 'input' not in tool_use:
-                            tool_use['input'] = ''
-                        tool_use['input'] += delta['toolUse']['input']
-                    elif 'text' in delta:
-                        text += delta['text']
-                        self.callbacks.on_llm_new_token(delta['text'])
-                elif 'contentBlockStop' in chunk:
-                    if 'input' in tool_use:
-                        tool_use['input'] = json.loads(tool_use['input'])
-                        content.append({'toolUse': tool_use})
-                        tool_use = {}
-                    else:
-                        content.append({'text': text})
-                        text = ''
-            return ConversationMessage(
-                role=ParticipantRole.ASSISTANT.value,
-                content=message['content']
-            )
+                #stream the response into a message.
+                for chunk in response['stream']:
+                    if 'messageStart' in chunk:
+                        message['role'] = chunk['messageStart']['role']
+                    elif 'contentBlockStart' in chunk:
+                        tool = chunk['contentBlockStart']['start']['toolUse']
+                        tool_use['toolUseId'] = tool['toolUseId']
+                        tool_use['name'] = tool['name']
+                    elif 'contentBlockDelta' in chunk:
+                        delta = chunk['contentBlockDelta']['delta']
+                        if 'toolUse' in delta:
+                            if 'input' not in tool_use:
+                                tool_use['input'] = ''
+                            tool_use['input'] += delta['toolUse']['input']
+                        elif 'text' in delta:
+                            text += delta['text']
+                            self.callbacks.on_llm_new_token(delta['text'])
+                    elif 'contentBlockStop' in chunk:
+                        if 'input' in tool_use:
+                            tool_use['input'] = json.loads(tool_use['input'])
+                            content.append({'toolUse': tool_use})
+                            tool_use = {}
+                        else:
+                            content.append({'text': text})
+                            text = ''
+                return ConversationMessage(
+                    role=ParticipantRole.ASSISTANT.value,
+                    content=message['content']
+                )
 
         except Exception as error:
             Logger.error(f"Error getting stream from Bedrock model: {str(error)}")
